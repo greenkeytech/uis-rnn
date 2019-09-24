@@ -16,7 +16,7 @@ rm -f .coverage
 # Run tests.
 for TEST_FILE in $(find tests -name "*_test.py"); do
     echo "Running tests in ${TEST_FILE}"
-    python3 -m coverage run -a ${TEST_FILE}
+    pipenv run python3 -m coverage run -a ${TEST_FILE}
 done
 echo "All tests passed!"
 

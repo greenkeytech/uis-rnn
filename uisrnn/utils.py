@@ -15,6 +15,10 @@
 
 import random
 import string
+import time
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import numpy as np
 import torch
@@ -185,6 +189,15 @@ def sample_permuted_segments(index_sequence, number_samples):
     sampled_index_sequences.append(np.concatenate(segments_array))
   return sampled_index_sequences
 
+def _subsample_sequences_for_resizing(sequence, cluster_id, idx, num_permutations=1):
+  return_tuple = ([], [])
+  idx_set = np.where(cluster_id == idx)[0]
+  sampled_idx_sets = sample_permuted_segments(idx_set, num_permutations)
+  for j in range(num_permutations):
+    return_tuple[0].append(sequence[sampled_idx_sets[j], :])
+    return_tuple[1].append(len(idx_set) + 1)
+
+  return return_tuple
 
 def resize_sequence(sequence, cluster_id, num_permutations=None):
   """Resize sequences for packing and batching.
@@ -199,22 +212,26 @@ def resize_sequence(sequence, cluster_id, num_permutations=None):
       cluster in the same list.
     seq_lengths: The length of each cluster (+1).
   """
+
   # merge sub-sequences that belong to a single cluster to a single sequence
   unique_id = np.unique(cluster_id)
   sub_sequences = []
   seq_lengths = []
-  if num_permutations and num_permutations > 1:
-    for i in unique_id:
-      idx_set = np.where(cluster_id == i)[0]
-      sampled_idx_sets = sample_permuted_segments(idx_set, num_permutations)
-      for j in range(num_permutations):
-        sub_sequences.append(sequence[sampled_idx_sets[j], :])
-        seq_lengths.append(len(idx_set) + 1)
-  else:
-    for i in unique_id:
-      idx_set = np.where(cluster_id == i)
-      sub_sequences.append(sequence[idx_set, :][0])
-      seq_lengths.append(len(idx_set[0]) + 1)
+  futures = []
+  executor = ThreadPoolExecutor()
+
+  if num_permutations is None:
+    num_permutations = 1
+
+  t1 = time.time()
+  for i in unique_id:
+    futures.append(executor.submit(partial(_subsample_sequences_for_resizing,
+                                            sequence, cluster_id, i, num_permutations)))
+  output = [future.result() for future in tqdm(futures)]
+  for sublists in output:
+    sub_sequences += sublists[0]
+    seq_lengths += sublists[1]
+  print('Resizing sequence took {}'.format(time.time()-t1))
   return sub_sequences, seq_lengths
 
 
