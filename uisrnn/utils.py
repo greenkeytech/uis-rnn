@@ -15,10 +15,10 @@
 
 import random
 import string
-import time
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from itertools import chain
+from multiprocessing.dummy import Pool
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -143,6 +143,26 @@ def concatenate_training_data(train_sequences, train_cluster_ids,
                                    for x in train_cluster_id]
   return concatenated_train_sequence, concatenated_train_cluster_id
 
+def group_by_consecutive_ids(input_sequence):
+  segments = []
+  if len(input_sequence) == 1:
+    segments.append(input_sequence)
+  else:
+    prev = 0
+    for i in range(len(input_sequence) - 1):
+      if input_sequence[i + 1] != input_sequence[i] + 1:
+        segments.append(input_sequence[prev:(i + 1)])
+        prev = i + 1
+      if i + 1 == len(input_sequence) - 1:
+        segments.append(input_sequence[prev:])
+
+  return segments
+
+def make_resampled_index_array(segments, number_samples=1):
+  sampled_index_sequences = [segments.copy() for _  in range(number_samples)]
+  list(map(np.random.shuffle, sampled_index_sequences))
+  return [np.array(list(chain(*_))) for _ in sampled_index_sequences]
+
 
 def sample_permuted_segments(index_sequence, number_samples):
   """Sample sequences with permuted blocks.
@@ -168,36 +188,25 @@ def sample_permuted_segments(index_sequence, number_samples):
     ```
       The length of "sampled_index_sequences" is "number_samples".
   """
-  segments = []
-  if len(index_sequence) == 1:
-    segments.append(index_sequence)
-  else:
-    prev = 0
-    for i in range(len(index_sequence) - 1):
-      if index_sequence[i + 1] != index_sequence[i] + 1:
-        segments.append(index_sequence[prev:(i + 1)])
-        prev = i + 1
-      if i + 1 == len(index_sequence) - 1:
-        segments.append(index_sequence[prev:])
-  # sample permutations
-  sampled_index_sequences = []
-  for _ in range(number_samples):
-    segments_array = []
-    permutation = np.random.permutation(len(segments))
-    for permutation_item in permutation:
-      segments_array.append(segments[permutation_item])
-    sampled_index_sequences.append(np.concatenate(segments_array))
-  return sampled_index_sequences
+  # group segments by block
+  segments = group_by_consecutive_ids(index_sequence)
+  output = make_resampled_index_array(segments, number_samples)
+  return output
 
-def _subsample_sequences_for_resizing(sequence, cluster_id, idx, num_permutations=1):
+
+def _subsample_sequences_for_resizing(sequence, cluster_indices, num_permutations=1):
   return_tuple = ([], [])
-  idx_set = np.where(cluster_id == idx)[0]
+  idx_set = np.array(cluster_indices)
+  # Create num_puermutations shuffles of this speaker indices preserving
+  # blocks (continuous segments of speech)
   sampled_idx_sets = sample_permuted_segments(idx_set, num_permutations)
-  for j in range(num_permutations):
-    return_tuple[0].append(sequence[sampled_idx_sets[j], :])
-    return_tuple[1].append(len(idx_set) + 1)
+  # Extract indices of sequence for the current speaker
+  subsampled_sequences = list(map(lambda x: sequence[x, :], sampled_idx_sets))
+  subsequence_length = [len(idx_set) + 1] * len(subsampled_sequences)
+  return_tuple = (subsampled_sequences, subsequence_length)
 
   return return_tuple
+
 
 def resize_sequence(sequence, cluster_id, num_permutations=None):
   """Resize sequences for packing and batching.
@@ -213,25 +222,22 @@ def resize_sequence(sequence, cluster_id, num_permutations=None):
     seq_lengths: The length of each cluster (+1).
   """
 
-  # merge sub-sequences that belong to a single cluster to a single sequence
-  unique_id = np.unique(cluster_id)
+  max_workers = 20
+  pool = Pool(processes=max_workers)
+
+  # Collect indecies for belonging to each speaker
+  cluster_indices = defaultdict(list)
+  for idx, val in enumerate(cluster_id):
+    cluster_indices[val].append(idx)
+
+  spkr_sequences = pool.map(partial(_subsample_sequences_for_resizing, sequence),
+                   list(cluster_indices.values()))
+
   sub_sequences = []
   seq_lengths = []
-  futures = []
-  executor = ThreadPoolExecutor()
-
-  if num_permutations is None:
-    num_permutations = 1
-
-  t1 = time.time()
-  for i in unique_id:
-    futures.append(executor.submit(partial(_subsample_sequences_for_resizing,
-                                            sequence, cluster_id, i, num_permutations)))
-  output = [future.result() for future in tqdm(futures)]
-  for sublists in output:
-    sub_sequences += sublists[0]
-    seq_lengths += sublists[1]
-  print('Resizing sequence took {}'.format(time.time()-t1))
+  for spkr_tuple in spkr_sequences:
+    sub_sequences += spkr_tuple[0]
+    seq_lengths += spkr_tuple[1]
   return sub_sequences, seq_lengths
 
 
