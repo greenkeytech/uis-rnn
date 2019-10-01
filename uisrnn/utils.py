@@ -172,6 +172,7 @@ def sample_permuted_segments(index_sequence, number_samples):
       - subsequence index
       For example, index_sequence = [1,2,6,10,11,12].
     number_samples: (integer)
+
       - number of subsampled block-preserving permuted sequences.
       For example, number_samples = 5
 
@@ -197,7 +198,7 @@ def sample_permuted_segments(index_sequence, number_samples):
 def _subsample_sequences_for_resizing(sequence, cluster_indices, num_permutations=1):
   return_tuple = ([], [])
   idx_set = np.array(cluster_indices)
-  # Create num_puermutations shuffles of this speaker indices preserving
+  # Create num_permutations shuffles of this speaker indices preserving
   # blocks (continuous segments of speech)
   sampled_idx_sets = sample_permuted_segments(idx_set, num_permutations)
   # Extract indices of sequence for the current speaker
@@ -208,6 +209,7 @@ def _subsample_sequences_for_resizing(sequence, cluster_indices, num_permutation
   return return_tuple
 
 
+# cspell:enable
 def resize_sequence(sequence, cluster_id, num_permutations=None):
   """Resize sequences for packing and batching.
 
@@ -217,7 +219,7 @@ def resize_sequence(sequence, cluster_id, num_permutations=None):
     num_permutations: int - Number of permutations per utterance sampled.
 
   Returns:
-    sub_sequences: A list of numpy array, with obsevation vector from the same
+    sub_sequences: A list of numpy array, with observation vector from the same
       cluster in the same list.
     seq_lengths: The length of each cluster (+1).
   """
@@ -225,34 +227,37 @@ def resize_sequence(sequence, cluster_id, num_permutations=None):
   max_workers = 20
   pool = Pool(processes=max_workers)
 
-  # Collect indecies for belonging to each speaker
+  # Collect indices for belonging to each speaker
   cluster_indices = defaultdict(list)
   for idx, val in enumerate(cluster_id):
     cluster_indices[val].append(idx)
 
   spkr_sequences = pool.map(partial(_subsample_sequences_for_resizing, sequence),
                    list(cluster_indices.values()))
-
   sub_sequences = []
   seq_lengths = []
   for spkr_tuple in spkr_sequences:
     sub_sequences += spkr_tuple[0]
     seq_lengths += spkr_tuple[1]
+
+  pool.close()
+  pool.join()
   return sub_sequences, seq_lengths
 
 
-def pack_sequence(
-    sub_sequences, seq_lengths, batch_size, observation_dim, device):
+def pack_sequence( sub_sequences, seq_lengths, batch_size,
+                   observation_dim, device, max_seq_len=4000):
   """Pack sequences for training.
 
   Args:
-    sub_sequences: A list of numpy array, with obsevation vector from the same
+    sub_sequences: A list of numpy array, with observation vector from the same
       cluster in the same list.
     seq_lengths: The length of each cluster (+1).
     batch_size: int or None - Run batch learning if batch_size is None. Else,
       run online learning with specified batch size.
     observation_dim: int - dimension for observation vectors
     device: str - Your device. E.g., `cuda:0` or `cpu`.
+    max_seq_len: int - maximum number of frames in a sample to avoid memory errors
 
   Returns:
     packed_rnn_input: (PackedSequence object) packed rnn input
@@ -262,30 +267,48 @@ def pack_sequence(
   sorted_seq_lengths = np.sort(seq_lengths)[::-1]
   permute_index = np.argsort(seq_lengths)[::-1]
 
-  if batch_size is None:
-    rnn_input = np.zeros((sorted_seq_lengths[0],
-                          num_clusters,
-                          observation_dim))
-    for i in range(num_clusters):
-      rnn_input[1:sorted_seq_lengths[i], i,
-                :] = sub_sequences[permute_index[i]]
-    rnn_input = autograd.Variable(
-        torch.from_numpy(rnn_input).float()).to(device)
-    packed_rnn_input = torch.nn.utils.rnn.pack_padded_sequence(
-        rnn_input, sorted_seq_lengths, batch_first=False)
-  else:
+  if batch_size:
+    # TODO: consider sampling without replacement, would probably need a class
+    # With a batch size choose random subset of data
     mini_batch = np.sort(np.random.choice(num_clusters, batch_size))
-    rnn_input = np.zeros((sorted_seq_lengths[mini_batch[0]],
-                          batch_size,
-                          observation_dim))
-    for i in range(batch_size):
-      rnn_input[1:sorted_seq_lengths[mini_batch[i]],
-                i, :] = sub_sequences[permute_index[mini_batch[i]]]
-    rnn_input = autograd.Variable(
-        torch.from_numpy(rnn_input).float()).to(device)
-    packed_rnn_input = torch.nn.utils.rnn.pack_padded_sequence(
-        rnn_input, sorted_seq_lengths[mini_batch], batch_first=False)
-  # ground truth is the shifted input
+    batch_clusters = batch_size
+    lengths_to_use = sorted_seq_lengths[mini_batch]
+    get_index = lambda i: mini_batch[i]
+  else:
+    # Use the whole dataset
+    batch_clusters = num_clusters
+    # Allocate new memory because the [::-1] operation above causes errors
+    lengths_to_use = sorted_seq_lengths.copy()
+    get_index = lambda i: i
+
+  if sorted_seq_lengths[get_index(0)] > max_seq_len:
+    # Some samples are too large and cause CUDA memory errors
+    batch_length = max_seq_len
+  else:
+    batch_length = sorted_seq_lengths[get_index(0)]
+
+  # Initialize output to zeros
+  rnn_input = np.zeros((batch_length,
+                        batch_clusters,
+                        observation_dim))
+
+  # Populate the output with samples
+  for i in range(batch_clusters):
+    sample = sub_sequences[permute_index[get_index(i)]]
+    sample_len = sample.shape[0]
+    # Restrict size of sample if necessary
+    if sample_len > max_seq_len:
+      subset_start = np.random.randint(0, sample_len - max_seq_len)
+      sample = sample[subset_start:subset_start + max_seq_len - 1]
+      # Update length for packing
+      lengths_to_use[i] = max_seq_len
+    rnn_input[1:sample_len + 1, i, :] = sample
+
+  rnn_input = autograd.Variable(
+      torch.from_numpy(rnn_input).float()).to(device)
+  packed_rnn_input = torch.nn.utils.rnn.pack_padded_sequence(
+      rnn_input, lengths_to_use, batch_first=False)
+  # Ground truth is the input shifted
   rnn_truth = rnn_input[1:, :, :]
   return packed_rnn_input, rnn_truth
 

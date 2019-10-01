@@ -148,6 +148,7 @@ class UISRNN:
     Args:
       filepath: the path of the file.
     """
+    # TODO add flag to load state_dict on cpu
     var_dict = torch.load(filepath)
     self.rnn_model.load_state_dict(var_dict['rnn_state_dict'])
     self.rnn_init_hidden = nn.Parameter(
@@ -227,6 +228,9 @@ class UISRNN:
       raise ValueError('train_sequence length is not equal to '
                        'train_cluster_id length.')
 
+    if args.batch_size < 1:
+      args.batch_size = None
+
     self.rnn_model.train()
     optimizer = self._get_optimizer(optimizer=args.optimizer,
                                     learning_rate=args.learning_rate)
@@ -244,20 +248,22 @@ class UISRNN:
           args.batch_size,
           self.observation_dim,
           self.device)
+      batch_size = len(sub_sequences)
+      print('No batch_size given, using all training data')
     train_loss = []
     for num_iter in range(args.train_iteration):
       optimizer.zero_grad()
       # For online learning, pack a subset in each iteration.
       if args.batch_size is not None:
+        batch_size = args.batch_size
         packed_train_sequence, rnn_truth = utils.pack_sequence(
             sub_sequences,
             seq_lengths,
-            args.batch_size,
+            batch_size,
             self.observation_dim,
             self.device)
-      # print(f'size of packed train batch is {getsize(packed_train_sequence)}')
-      # print(f'size of rnn_truth is {getsize(rnn_truth)}')
-      hidden = self.rnn_init_hidden.repeat(1, args.batch_size, 1)
+
+      hidden = self.rnn_init_hidden.repeat(1, batch_size, 1)
       mean, _ = self.rnn_model(packed_train_sequence, hidden)
       # use mean to predict
       mean = torch.cumsum(mean, dim=0)
