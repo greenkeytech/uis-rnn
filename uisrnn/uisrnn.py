@@ -247,7 +247,8 @@ class UISRNN:
           seq_lengths,
           args.batch_size,
           self.observation_dim,
-          self.device)
+          self.device,
+          args.max_seq_len)
       batch_size = len(sub_sequences)
       print('No batch_size given, using all training data')
     train_loss = []
@@ -261,7 +262,8 @@ class UISRNN:
             seq_lengths,
             batch_size,
             self.observation_dim,
-            self.device)
+            self.device,
+            args.max_seq_len)
 
       hidden = self.rnn_init_hidden.repeat(1, batch_size, 1)
       mean, _ = self.rnn_model(packed_train_sequence, hidden)

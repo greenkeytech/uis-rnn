@@ -167,6 +167,12 @@ def parse_arguments():
            'is a list of sequences. In general, assume the cluster IDs for two '
            'sequences are [a, b] and [a, c]. If the `a` from the two sequences '
            'are not the same label, then this arg should be True.')
+  training_parser.add_argument(
+      '--max_seq_len',
+      default=4000,
+      type=int,
+      help='The maximum length of sequences input to the training step. '
+           'Can relieve memory issues created by packing batches with a few very long sequences')
 
   # inference configurations
   inference_parser = argparse.ArgumentParser(
