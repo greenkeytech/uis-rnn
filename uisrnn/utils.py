@@ -114,7 +114,13 @@ def concatenate_training_data(train_sequences, train_cluster_ids,
   global_observation_dim = None
   for i, (train_sequence, train_cluster_id) in enumerate(
       zip(train_sequences, train_cluster_ids)):
-    train_length, observation_dim = train_sequence.shape
+    try:
+      train_length, observation_dim = train_sequence.shape
+    except:
+      print('Given and invalid sequence {train_sequence}, deleting it')
+      del train_sequences[i]
+      del train_cluster_ids[i]
+      continue
     if i == 0:
       global_observation_dim = observation_dim
     elif global_observation_dim != observation_dim:
@@ -127,6 +133,8 @@ def concatenate_training_data(train_sequences, train_cluster_ids,
       raise ValueError(
           'Each train_sequence and its train_cluster_id must have same length')
 
+  if orig_seq_len != len(train_cluster_ids):
+    print(f'Samples removed from input: original number {orig_seq_len}, final number {len(train_cluster_ids)}')
   # enforce uniqueness
   if enforce_uniqueness:
     train_cluster_ids = enforce_cluster_id_uniqueness(train_cluster_ids)
