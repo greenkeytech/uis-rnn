@@ -108,6 +108,7 @@ def concatenate_training_data(train_sequences, train_cluster_ids,
   if len(train_sequences) != len(train_cluster_ids):
     raise ValueError(
         'train_sequences and train_cluster_ids must have same size')
+  orig_seq_len = len(train_cluster_id)
   train_cluster_ids = [
       x.tolist() if isinstance(x, np.ndarray) else x
       for x in train_cluster_ids]
@@ -217,7 +218,6 @@ def _subsample_sequences_for_resizing(sequence, cluster_indices, num_permutation
   return return_tuple
 
 
-# cspell:enable
 def resize_sequence(sequence, cluster_id, num_permutations=None):
   """Resize sequences for packing and batching.
 
@@ -253,8 +253,8 @@ def resize_sequence(sequence, cluster_id, num_permutations=None):
   return sub_sequences, seq_lengths
 
 
-def pack_sequence( sub_sequences, seq_lengths, batch_size,
-                   observation_dim, device, max_seq_len=4000):
+def pack_sequence(sub_sequences, seq_lengths, batch_size,
+                  observation_dim, device, max_seq_len=4000):
   """Pack sequences for training.
 
   Args:
